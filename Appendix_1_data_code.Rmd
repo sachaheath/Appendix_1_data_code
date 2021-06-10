@@ -1,0 +1,748 @@
+---
+title: "Appendix 1. Data and Code for Chapter 1: An expanded scope of biodiversity in urban agriculture, with implications for conservatio, in Urban Agroecology: Past, Present, and Future Directions in Interdisciplinary Research (Monika Egerer and Hamutahl Cohen eds). Taylor & Francis, Abingdon, UK"
+name: "Sacha K. Heath, Nina S. Fogel, Jennifer C. Mullikin, and Trey Hull"
+date: "12 June 2019 - 8 Feb 2020"
+---
+
+```{r, comment = FALSE}
+library(tidyverse)
+library(revtools)
+library(ggplot2)
+library(cowplot)
+library(splitstackshape)
+library(fastDummies)
+library(choroplethr)
+library(choroplethrMaps)
+library(viridis)
+library(scales)
+```
+
+
+**Screen article titles**
+The following took place within zotero or through the web interfaces for the citations databases
+n = 9,066 original set from Web of Science, Agricola, Google Scholar
+n = 6,688 after deleting duplicates
+n = 1,530 after SKH screened titles and removed removed conference abstracts and magazine articles
+n = 1,441 after SKH manually screened all journal titles and confirmed whether they were included in [Urlich Database](https://www.ulrichsweb.com/ulrichsweb/faqs.asp), certified by [DOAJ](https://doaj.org/), and/or passed screening by using the [Journal Evaluation Tool (Rele et al. 2017)](https://digitalcommons.lmu.edu/librarian_pubs/40/).  
+n = 1,311 after SKH screened titles again
+n = 968 after 1,311 abstracts were distributed among the four authors and screened
+n = 431 after full texts were screened by the four authors
+
+**Final article set (n = 431)**
+
+Load final proofed zotero .ris file with all selected and read papers from which we extracted data.
+```{r}
+z <- read_bibliography("./final_zotero_set_n431.ris")
+head(z)
+```
+
+**Topic models**
+Build a topic model
+Use title at label, screen topics from abstracts, all defaults except for 20,000 iterations.
+```{r}
+screen_topics(z)
+```
+
+Used the revtools interface to remove stopwords during several iterations until only topical words remained and the final model was retained:
+```{r}
+tm <- readRDS("./topicmodel_final.rds") #our final topic model
+```
+
+Removed these words:
+```{r}
+tm$stopwords
+```
+
+```{r}
+tm$model
+summary(tm)
+```
+
+```{r}
+ord_topic <- tm$plot_ready$x
+bp_topic <- tm$plot_ready$topic
+tnum <- tm$plot_ready$y
+```
+
+
+**Manually extracted data**
+
+Load the database of the manually extracted data.
+```{r}
+d <- read.table("./manually_extracted_n431.txt", sep = ",", header = TRUE)
+head(d)
+```
+
+**Summarize publications by year**
+
+```{r}
+year_tab <- d %>% select(year) %>%
+  group_by(year) %>%
+  tally()
+
+year_tab$prop <- round((year_tab$n/432) * 100,2)
+year_tab
+
+``` 
+
+**Summarize publications by country**
+
+```{r}
+sort(unique(d$countries))
+```
+
+First, some articles took place in multiple countries, so let's split up the column of these concataenated semi-colon-delimated data and recode output as factors. [From this](https://stackoverflow.com/questions/10100887/split-a-column-of-concatenated-comma-delimited-data-and-recode-output-as-factors)
+```{r}
+d1 <- cSplit(d, "countries", sep = ";", direction = "long", drop = FALSE) # one study can have taken place in multiple countries
+d1
+```
+
+The choropleth package requires the following changes
+```{r}
+country_tab <- d1 %>% select(countries) %>%
+  filter(!countries %in% c("global")) %>%
+  mutate(region = tolower(countries)) %>% 
+  mutate(region = ifelse(region == "england" | region == "wales" | region == "northern ireland" | region =="scotland", "united kingdom", 
+                         ifelse(region == "democratic republic of congo", "democratic republic of the congo",
+                                ifelse(region =="french guiana", "france",
+                                       ifelse(region=="greenland", "denmark",
+                                              ifelse(region=="puerto rico" | region =="usa", "united states of america",
+                                                     ifelse(region=="republic of ireland", "ireland",
+                                                            ifelse(region=="singapore", "malaysia",
+                                                                   ifelse(region=="tanzania", "united republic of tanzania",
+                                                                          ifelse(region == "côte d'ivoire", "ivory coast", region)))))))))) %>%
+  group_by(region) %>%
+  tally() 
+
+country_tab
+``` 
+
+
+**Summarise by journals**
+```{r}
+journal_tab <- d %>% select(journal) %>%
+  group_by(journal) %>%
+  tally()
+
+journal_table <- journal_tab[order(-journal_tab$n),]
+journal_table
+```
+
+**Biodiversity, urban, agriculture, production, conservation summary**
+
+*Spread/reshape answers for multiple choice/answer analyses*
+```{r}
+names(d)
+```
+
+In the Access Database, I manually combined xxxx and xxxxx_other, to make dummy variable creation easier. Only added in "other" categories if a large grouping other than choices, sometimes we used these for notes of more detailed groupings.
+
+Spread the multiple answer variables across columns and create dummy variables
+```{r}
+d_dummy <- dummy_cols(d[c("gen_type", "urban_type","agriculture_type", "production_type", "conservation")], ignore_na=TRUE, split = ";")
+
+d_dummy$conservation_cons_manage_effects <- d_dummy$conservation_cons_effects + d_dummy$conservation_manage_effects  #these were interchangeable and difficult to discern, so I combine
+d_dummy$conservation_cons_manage_effects <- ifelse(d_dummy$conservation_cons_manage_effects ==2, 1, d_dummy$conservation_cons_manage_effects)
+names(d_dummy)
+```
+
+Remove white spaces in column names
+```{r}
+d_dummy_f <- d_dummy %>%
+  rename_all(~str_replace_all(., "\\s+", "_"))
+dim(d_dummy_f)
+```
+
+Add on the ipmdata to the wide database
+```{r}
+w <- cbind(d_dummy_f, d[22])
+names(w); dim(w)
+```
+
+
+*Summarize across multiple choice answers*
+
+[A function for multiple choice/answer questions](https://stackoverflow.com/questions/9265003/analysis-of-multiple-response)
+I added the SE and 95% CI calculations from [here](https://www.datarevelations.com/tag/check-all-that-apply)
+```{r}
+multfreqtable = function(data, question.prefix) { # Find the columns with the questions
+  a = grep(question.prefix, names(data))          
+  b = sum(data[, a] != 0)                         # Find the total number of responses
+  d = colSums(data[, a] != 0)                     # Find the totals for each question
+  e = sum(rowSums(data[,a]) !=0)                  # Find the number of papers
+  f = as.numeric(c(d, b))                         # d + b as a vector. This is your overfall frequency 
+  data.frame(question = c(names(d), "Total"),
+             freq = f,
+             percent = round((f/b)*100,2),
+             percentofcases = round((f/e)*100, 2),
+             se_poc = round((sqrt((f/e)*(1-f/e) / sum(e)))*100,2),                             #I added this
+             ci_95 = round(((sqrt((f/e)*(1-f/e) / sum(e)))*1.959964)*100,2),                   #I added this
+             lo_ci_poc = round(((f/e) - ((sqrt((f/e)*(1-f/e) / sum(e)))*1.959964))*100,2),     #I added this
+             hi_ci_poc = round(((f/e) + ((sqrt((f/e)*(1-f/e) / sum(e)))*1.959964))*100, 2) )   #I added this
+}
+```
+
+
+% of responses indicates what % of the total responses were in each category e.g., 300 out of 1000 (30%) responses may have been about A, 500 (50%) about B and 200 (20%) about C. Note that these %s will sum to 100%.
+
+% of cases indicates what % of cases mentioned each category e.g., 250 out of 600 cases (45%) may have mentioned A, 400 may have mentioned B (67%) and 150 (25%) may have mentioned C. Note that these %s will sum to more than 100% if at least one article represented more than one level within a factor.
+
+I use the latter because articles covered several different (e.g.) biodiversity types. 
+
+
+```{r}
+names(w)
+```
+
+
+General biodiversity type
+```{r}
+gen_type_sum <- multfreqtable(w[6:13], "gen_type")
+gen_type_sum$cat <- "biodiversity"
+gen_type_sum <- arrange(gen_type_sum, desc(percentofcases))
+gen_type_sum <- gen_type_sum[c(2:9, 1),]
+gen_type_sum
+```
+
+Urban type
+```{r}
+urban_type_sum <- multfreqtable(w[14:17], "urban_type")
+urban_type_sum$cat <- "urban"
+urban_type_sum <- arrange(urban_type_sum, desc(percentofcases))
+urban_type_sum <- urban_type_sum[c(2:5, 1),]
+urban_type_sum
+```
+
+agriculture type
+```{r}
+ag_type_sum <- multfreqtable(w[18:28], "agriculture_type")
+ag_type_sum$cat <- "agriculture"
+ag_type_sum <- arrange(ag_type_sum, desc(percentofcases))
+ag_type_sum <- ag_type_sum[c(2:12, 1),]
+ag_type_sum
+```
+
+ag production type
+```{r}
+production_type_sum <- multfreqtable(w[29:34], "production_type")
+production_type_sum$cat <- "production"
+production_type_sum <- arrange(production_type_sum, desc(percentofcases))
+production_type_sum <- production_type_sum[c(2:7, 1),]
+production_type_sum
+```
+
+conservation type
+```{r}
+conservation_type_sum <- multfreqtable(w[35:41], "conservation")
+conservation_type_sum$cat <- "conservation"
+conservation_type_sum <- arrange(conservation_type_sum, desc(percentofcases))
+conservation_type_sum <- conservation_type_sum[c(2:6, 1),]
+conservation_type_sum
+```
+
+rbind tables
+```{r}
+bio_urb_ag_cons_sum <- rbind(gen_type_sum, urban_type_sum, ag_type_sum, production_type_sum, conservation_type_sum)
+```
+
+
+**Some in text summaries and tallies**
+```{r}
+names(d)
+```
+
+Gradient study
+```{r}
+prop.table(table(d$gradient_study))
+```
+
+Plants
+```{r}
+d %>% filter(gen_type == "plant" ) %>%
+  group_by(continents) %>%
+  tally() %>%
+  arrange(-n)
+
+plant <- w %>% filter(gen_type_plant ==1); dim(plant)
+
+sum(plant$agriculture_type_residential_garden) / nrow(plant)
+
+```
+
+Inverts
+
+IPM  summary
+```{r}
+prop.table(table(w$ipm[w$gen_type_invertebrate == 1]))
+
+table(w$ipm[w$gen_type_invertebrate == 1])
+```
+
+
+Birds
+```{r}
+sum(w$gen_type_bird==1) #101
+
+sum(w$agriculture_type_residential_garden[w$gen_type_bird == 1]) #87
+prop.table(table(w$agriculture_type_residential_garden[w$gen_type_bird == 1])) #86%
+
+bird <- w %>% filter(gen_type_bird ==1); dim(bird)
+
+sum(bird$production_type_food[bird$agriculture_type_residential_garden==1]) 
+sum(bird$production_type_ornamental[bird$agriculture_type_residential_garden==1]) 
+sum(bird$production_type_unknown[bird$agriculture_type_residential_garden==1]) 
+
+sum(bird$production_type_food)
+```
+
+
+
+***
+***
+***
+
+**Figures**
+
+Magma palette from Viridis
+```{r}
+show_col(viridis_pal(option="A")(15))
+mag_col <-(c("#000000", "#410F75FF", "#982D80FF", "#F8765CFF","#FDDC9EFF"))
+show_col(mag_col)
+```
+
+Black and white palette for final publication
+```{r}
+bwcol<- (c("black", "grey25", "grey45", "grey75", "grey100"))
+show_col(bwcol)
+```
+
+**Figure 1: Publications by year**
+
+```{r}
+year_tab$year <- as.factor(year_tab$year)
+year_tab
+```
+
+As of June 21, 2019
+```{r, fig.height = 4, fig.width = 8}
+year_plot <-
+  ggplot(year_tab, aes(x=year, y=prop)) +
+  geom_bar(stat = "identity", fill = bwcol[3]) +
+  xlab("Publication year") + ylab("Percentage (n=431)") +
+  theme_classic() +
+  theme(legend.position = "none",
+    axis.title = element_text(size = 16),
+    axis.title.y = element_text(vjust=2), 
+    axis.title.x = element_text(vjust=-0.5), 
+    axis.text.x = element_text(size = 8, colour = "black"),
+    axis.text.y = element_text(size = 12, colour = "black")
+    )
+
+year_plot
+```
+
+Export
+```{r, eval=FALSE, warning=FALSE}
+tiff("./year_plot_bw.tiff", height = 4, width = 8, units = 'in',res=600)
+year_plot
+dev.off()
+
+cairo_pdf(file = "./year_plot_bw.pdf", height = 4, width = 8) #embeds fonts
+year_plot
+dev.off()
+```
+
+**Figure 2: Studies by country**
+
+```{r}
+names(country_tab)[2] <-c("value")
+min(country_tab$value)
+max(country_tab$value)
+```
+
+
+```{r}
+country_plot <- 
+  country_choropleth(country_tab, title = "", legend ="", num_colors = 1, zoom = NULL) +
+  scale_fill_gradient(low="grey70", high ="black", na.value = "white", name = "Number of\nstudies") + 
+  theme(
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12, colour = "black"),
+    plot.margin = margin(t = 0, r = 0.25, b = 0, l = 0, unit = "cm"))
+
+country_plot
+```
+
+Export
+```{r, eval=FALSE, warning=FALSE}
+tiff("./country_plot_bs.tiff", height = 4, width = 8, units = 'in',res=600)
+country_plot
+dev.off()
+
+cairo_pdf(file = "./country_plot_bw.pdf", height = 4, width = 8) #embeds fonts
+country_plot
+dev.off()
+```
+
+**Figure x: Journal plots**
+
+```{r}
+journal <- journal_table %>% filter(n > 4)
+journal$journal <- fct_reorder(journal$journal, journal$n)
+journal
+```
+
+```{r, fig.height = 4, fig.width = 8}
+journal_plot <-
+  ggplot(journal, aes(x=journal, y=n)) +
+  geom_col(fill=bwcol[3]) +
+  coord_flip() +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 48))+
+  xlab("") + ylab("Number of articles") +
+  theme_classic() +
+  theme(legend.position = "none",
+    axis.title = element_text(size = 16),
+    axis.title.y = element_text(vjust=2), 
+    axis.text.x = element_text(size = 14, colour = "black"),
+    axis.ticks.y = element_blank(),
+    axis.text.y = element_text(size = 12, colour = "black")
+    ) 
+journal_plot
+```
+
+Export
+```{r, eval=FALSE, warning=FALSE}
+tiff("./journal_plot_bw.tiff", height = 4, width = 8, units = 'in',res=600)
+journal_plot
+dev.off()
+
+cairo_pdf(file = "./journal_plot_bw.pdf", height = 4, width = 8) #embeds fonts
+journal_plot
+dev.off()
+```
+
+
+**Figure 1: combined year, countries, journals**
+
+```{r, fig.height = 12, fig.width = 8}
+summary_plot <-
+  plot_grid(year_plot, journal_plot, country_plot, 
+          ncol = 1, 
+          labels = c("A", "B", "C"))
+summary_plot
+```
+
+Export
+```{r, eval=FALSE, warning=FALSE}
+tiff("./Fig1.1.tiff", height = 12, width = 8, units = 'in',res=600)
+summary_plot
+dev.off()
+
+cairo_pdf(file = "./F1g1.1.pdf", height = 12, width = 8) #embeds fonts
+summary_plot
+dev.off()
+```
+
+
+**Figure x: Topic Model Plots**
+
+Ordination plot
+```{r}
+ordtopic <- ord_topic[,c("topic", "Axis1", "Axis2", "common_words", "title")]
+ordtopic
+ordtopic$topic_group <- as.factor(ordtopic$topic)
+
+```
+
+```{r}
+names(bwcol) <- levels(ordtopic$topic_group)
+
+show_col(bwcol)
+bwcol
+```
+
+
+```{r}
+topic_ord <-
+  ggplot(ordtopic, aes(x =Axis1, y = Axis2, fill = topic_group, colour = topic_group)) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +
+  geom_point(size = 3, pch = 21) +
+  scale_colour_manual(name = "Topic Group",values = c("black" , "grey75"  ,"black",  "grey35")) +
+  scale_fill_manual(name = "Topic Group",values = c("black" , "grey75"  ,"white",  "grey35")) +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12, colour = "black"),
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 12, colour = "black")
+    ) +
+  theme(plot.margin =  unit(c(0.5, 0.5, 0, 0), "cm")) +
+  guides(colour = guide_legend(override.aes = list(size=8))) 
+
+topic_ord 
+```
+
+Topic barplot
+```{r}
+bp_topic <- tm$plot_ready$topic
+bp_topic$topic <- as.factor(bp_topic$topic) 
+bp_topic
+```
+
+```{r}
+topic_bar<-
+  ggplot(bp_topic, aes(x =topic, y = n, fill = topic, colour = topic)) +
+  geom_col() +
+  coord_flip() +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 120))+
+  scale_colour_manual(name = "topic",values = c("black" , "grey75"  ,"black",  "grey35")) +
+  scale_fill_manual(name = "topic",values = c("black" , "grey75"  ,"white",  "grey35")) +
+  #scale_fill_manual(name = "topic",values = mag_col) +
+  xlab("Topic Group") + ylab("Number of articles") +
+  theme_classic() +
+  theme(legend.position = "none",
+    axis.title = element_text(size = 16),
+    axis.title.y = element_text(vjust=2), 
+    axis.ticks.y = element_blank(),
+    axis.text = element_text(size = 14, colour = "black"),
+    plot.margin =  unit(c(0.1, 0.5, 0.1, 0.25), "cm"))
+  
+
+topic_bar
+```
+
+Individual per topic word barplots 
+```{r}
+tnum <- tm$plot_ready$y
+tnum$term <-as.factor(tnum$term)
+tnum
+```
+
+Topic 1
+```{r}
+topic1 <- filter(tnum, topic==1)
+topic1$term <- fct_reorder(topic1$term, topic1$topic_weight)
+topic1 <- topic1[1:10,] #top 10 weighted words
+topic1
+```
+
+```{r, fig.height = 3, fig.width = 4}
+t1 <- ggplot(topic1, aes(x =term, y = topic_weight)) +
+  geom_col(fill=bwcol[1]) +
+  coord_flip() +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 0.065)) +
+  xlab("") + ylab("Weight") +
+  theme_classic() +
+  theme(legend.position = "none",
+    axis.title = element_text(size = 16),
+    axis.title.y = element_text(vjust=2), 
+    axis.text.x = element_text(size = 12, colour = "black"),
+    axis.ticks.y = element_blank(),
+    axis.text.y = element_text(size = 14, colour = "black")) +
+  theme(plot.margin =  unit(c(0, 0.5, 0, 0), "cm"))
+  
+t1 
+```
+
+
+Topic 2
+```{r}
+topic2 <- filter(tnum, topic==2)
+topic2$term <- fct_reorder(topic2$term, topic2$topic_weight)
+topic2 <- topic2[1:10,] #top 30 weighted words
+topic2
+```
+
+```{r, fig.height = 3, fig.width = 4}
+t2 <-
+  ggplot(topic2, aes(x =term, y = topic_weight)) +
+  geom_col(fill="grey75") +
+  coord_flip() +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 0.04)) +
+  xlab("") + ylab("Weight") +
+  theme_classic() +
+  theme(legend.position = "none",
+    axis.title = element_text(size = 16),
+    axis.title.y = element_text(vjust=2), 
+    axis.text.x = element_text(size = 12, colour = "black"),
+    axis.ticks.y = element_blank(),
+    axis.text.y = element_text(size = 14, colour = "black")) +
+  theme(plot.margin =  unit(c(0, 0.5, 0, 0), "cm"))
+
+t2
+```
+
+Topic 3
+```{r}
+topic3 <- filter(tnum, topic==3)
+topic3$term <- fct_reorder(topic3$term, topic3$topic_weight)
+topic3 <- topic3[1:10,] #top 10 weighted words
+topic3
+```
+
+```{r, fig.height = 3, fig.width = 4}
+t3 <-
+  ggplot(topic3, aes(x =term, y = topic_weight)) +
+  geom_col(fill="white", col= "black") +
+  coord_flip() +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 0.12)) +
+  xlab("") + ylab("Weight") +
+  theme_classic() +
+  theme(legend.position = "none",
+    axis.title = element_text(size = 16),
+    axis.title.y = element_text(vjust=2), 
+    axis.text.x = element_text(size = 12, colour = "black"),
+    axis.ticks.y = element_blank(),
+    axis.text.y = element_text(size = 14, colour = "black")) +
+  theme(plot.margin =  unit(c(0, 0.5, 0, 0), "cm"))
+t3
+```
+
+Topic 4
+```{r}
+topic4 <- filter(tnum, topic==4)
+topic4$term <- fct_reorder(topic4$term, topic4$topic_weight)
+topic4 <- topic4[1:10,] #top 30 weighted words
+topic4
+```
+
+```{r, fig.height = 3, fig.width = 4}
+t4 <-
+  ggplot(topic4, aes(x =term, y = topic_weight)) +
+  geom_col(fill="grey35") +
+  coord_flip() +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 0.03))  +
+  xlab("") + ylab("Weight") +
+  theme_classic() +
+  theme(legend.position = "none",
+    axis.title = element_text(size = 16),
+    axis.title.y = element_text(vjust=2), 
+    axis.text.x = element_text(size = 12, colour = "black"),
+    axis.ticks.y = element_blank(),
+    axis.text.y = element_text(size = 14, colour = "black")) +
+  theme(plot.margin =  unit(c(0, 0.5, 0, 0), "cm"))
+t4
+```
+
+Group figures together
+```{r, fig.height = 5, fig.width = 10}
+row1 <- plot_grid(topic_bar, topic_ord, labels = c('A', 'B'), ncol =2, rel_widths = c(1,1.75))
+row2 <- plot_grid(t1, t2, labels = c('C', 'D'), ncol =2, scale = 0.9)
+row3 <- plot_grid(t3, t4,  labels = c('E', 'F'), ncol =2, scale = 0.9)
+```
+
+```{r, fig.height = 9, fig.width = 8}
+topic_plot <-
+  plot_grid(row1, row2, row3,
+          ncol = 1, nrow = 3, rel_heights = c(1.25,1,1))
+topic_plot
+```
+
+Export
+```{r, eval=FALSE, warning=FALSE}
+tiff("./fig1.2.tiff", height = 9, width = 8, units = 'in',res=600)
+topic_plot
+dev.off()
+
+cairo_pdf(file = "./fig1.2.pdf", height = 9, width = 8) #embeds fonts
+topic_plot
+dev.off()
+```
+
+
+**Types of biodiversity, urban, agriculture, production, and conservatoin summary plot/table**
+
+```{r}
+s <- bio_urb_ag_cons_sum
+s1 <- s %>% filter(!question %in% "Total") 
+s1$question_label <- c("Plants", "Invertebrates", "Birds", "Mammals", "Reptiles", "Amphibians", "Soil microbes", "Fish",
+                    "Urban", "Suburban", "Peri-urban", "Exurban", 
+                    "Residential garden", "Community garden/farm", "Commercial garden/farm", "Park garden/farm", "Botanical garden", 
+                    "¹Buildings", "¹Research garden/lab", "¹Urban green infrastructure", "¹Urban foraging", "¹Teaching farm", "¹Apiculture", 
+                    "Ornamental", "Food", "Unknown", "¹Medicinal", "Livestock", "Fiber", "Information", "Management effects","Distribution", "None", "Protected status species")
+dplyr::select(s1, question, question_label)
+```
+
+```{r}
+s1$cat_f = factor(s1$cat, levels=c("biodiversity", "urban", "agriculture", "production", "conservation"), labels = c("Biodiversity \ntype", "Urban \ntype", "Agriculture \ntype", "Production \ntype", " Conservation \ntype"))
+s1
+```
+
+
+```{r, fig.height= 10, fig.width = 7}
+q <- 
+  ggplot(s1, aes(x = percentofcases, y = reorder(question_label, percentofcases), color = cat) )+
+  geom_errorbarh(aes(xmax = percentofcases + ci_95, xmin = percentofcases - ci_95, height = 0), lwd= 1.5) +
+  geom_point(size = 4) +
+  xlab("Percentage of articles") + ylab("") +
+  facet_grid(cat_f ~. , scales = "free",  space = "free") +
+  annotate("text", x=90, y=3, label= c("A")) +
+  #scale_color_manual(values=c("#000000", "#410F75FF", "#982D80FF", "#F8765CFF","#FDDC9EFF"), guide="none") +
+  scale_color_manual(values=c("black", "grey15", "grey25", "grey45", "grey60", guide="none")) +
+  theme_bw() +
+  theme(legend.position = "none",
+    strip.text.y = element_text(size = 14, color = "black"),
+    strip.background = element_rect(colour = c("black")),
+    panel.grid = element_blank(),
+    panel.background = element_rect(fill = "white"),
+    axis.text.x = element_text(size = 14, colour = "black"),
+    axis.title.x = element_text(size = 16, colour = "black"),
+    axis.ticks.y = element_blank(),
+    axis.text.y = element_text(size = 14, colour = "black")) 
+  
+
+#color strip backgrounds
+
+#g <- ggplot_gtable(ggplot_build(q))
+
+#strips <- which(grepl('strip-', g$layout$name))
+#pal <- c("#grey25", "#grey100","black", "grey75" ,"grey45")
+#font_pal <- c("white", "#000000","white", "#000000" ,"#000000")
+
+
+#for (i in seq_along(strips)) {
+#  k <- which(grepl('rect', g$grobs[[strips[i]]]$grobs[[1]]$childrenOrder))
+#  l <- which(grepl('titleGrob', g$grobs[[strips[i]]]$grobs[[1]]$childrenOrder))
+#  g$grobs[[strips[i]]]$grobs[[1]]$children[[k]]$gp$fill <- pal[i]
+#  g$grobs[[strips[i]]]$grobs[[1]]$children[[l]]$children[[1]]$gp$col <- font_pal[i]
+#}
+
+ggdraw(g) +
+  draw_label("A", x=0.025, y=0.98, fontface = "bold") +
+  draw_label("B", x=0.025, y=0.76, fontface = "bold") +
+  draw_label("C", x=0.025, y=0.64, fontface = "bold") +
+  draw_label("D", x=0.025, y=0.34, fontface = "bold") +
+  draw_label("E", x=0.025, y=0.18, fontface = "bold") 
+```
+
+Export
+```{r, eval=FALSE, warning=FALSE}
+tiff("./fig1.3.tiff", height = 10, width = 7, units = 'in',res=1000)
+ggdraw(g) +
+  draw_label("A", x=0.025, y=0.98, fontface = "bold") +
+  draw_label("B", x=0.025, y=0.76, fontface = "bold") +
+  draw_label("C", x=0.025, y=0.64, fontface = "bold") +
+  draw_label("D", x=0.025, y=0.34, fontface = "bold") +
+  draw_label("E", x=0.025, y=0.18, fontface = "bold") 
+dev.off()
+
+cairo_pdf(file = "./fig1.3.pdf", height = 10, width = 7) #embeds fonts
+ggdraw(g) +
+  draw_label("A", x=0.025, y=0.98, fontface = "bold") +
+  draw_label("B", x=0.025, y=0.76, fontface = "bold") +
+  draw_label("C", x=0.025, y=0.64, fontface = "bold") +
+  draw_label("D", x=0.025, y=0.34, fontface = "bold") +
+  draw_label("E", x=0.025, y=0.18, fontface = "bold") 
+dev.off()
+```
+
+
+
+
+
+
+
+
+
+
